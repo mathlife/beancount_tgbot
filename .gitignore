@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.env
+.venv
+venv/
+.pytest_cache/
+*.session
+# Data
+data/
+!data/example.bean
+!data/accounts/
+tests/data/
+
+# Debug scripts
+debug_*.py

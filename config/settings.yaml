@@ -1,0 +1,34 @@
+# User settings and aliases
+
+# User settings
+# Aliases are now loaded primarily from Beancount metadata (e.g., alias: "wx")
+
+aliases:
+  # Optional: Keep "templates" or fallback aliases here if absolutely necessary
+  # But main source is now the .bean files.
+    "饭": "Expenses:Food"
+    "咖啡": "Expenses:Drink"
+    "水": "Expenses:Drink"
+    "饮料": "Expenses:Drink"
+    "公交": "Expenses:Transport"
+    "brt": "Expenses:Transport"
+    "出租": "Expenses:Transport"
+    "打车": "Expenses:Transport"
+    "飞机": "Expenses:Travel:Transport"
+    "航班": "Expenses:Travel:Transport"
+    "酒店": "Expenses:Travel:Hotel"
+    "住宿": "Expenses:Travel:Hotel"
+    "门票": "Expenses:Travel:Tickets"
+    "上衣": "Expenses:Shopping:Clothes"
+    "裤子": "Expenses:Shopping:Clothes"
+    "装饰": "Expenses:Shopping:Clothes"
+    "袜子": "Expenses:Shopping:Clothes"
+    "围巾": "Expenses:Shopping:Clothes"
+    "帽子": "Expenses:Shopping:Clothes"
+    "优惠": "Expenses:CN:Discount"
+    "返现": "Income:CN:Rebate"
+
+system:
+  currency: "CNY"
+  bean_file: "data/main.bean"  # Path to root bean file relative to project root
+  append_file: "data/2026.bean" # New transactions go here
