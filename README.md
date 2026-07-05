@@ -78,7 +78,7 @@ python main.py
 
 - [项目上下文](contexts/context.md) - 完整项目说明
 - [解析规范](specs/parsing-spec.md) - 技术规范
-- [部署指南](DEPLOY.md) - 服务器部署
+- [脚本说明](docs/ip-geo-outbound-rename.md) - Sub-Store 节点命名脚本说明
 
 ## 🛠️ 技术栈
 
