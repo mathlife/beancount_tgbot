@@ -23,6 +23,8 @@ TG_bot/
 │   ├── main.bean           # Beancount 主文件
 │   ├── logs/               # 交易日志
 │   └── backups/            # 自动备份
+├── tools/
+│   └── ip-geo-outbound-rename.js  # Sub-Store 节点命名脚本
 └── src/
     ├── bot/                # Telegram Bot 模块
     ├── core/               # 核心逻辑模块
