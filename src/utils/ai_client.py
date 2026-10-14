@@ -102,6 +102,31 @@ class GeminiClient:
             print(f"Gemini API Error: {e}")
             return {"payee": "", "narration": description, "account": "Expenses:Unknown"}
 
+    def nl_to_query_intent(self, text: str, accounts_context: str) -> dict:
+        """
+        将自然语言问题解析为查询意图（intent）JSON。
+        返回: {"metric", "time_range", "keyword", "account"}
+        """
+        prompt = f"""You are a bookkeeping query parser for a Beancount ledger.
+Convert the user's Chinese/English question into a JSON query intent.
+
+Available accounts (return 'account' only when clearly implied, else null):
+{accounts_context}
+
+Return STRICTLY a JSON object with these keys:
+- "metric": one of "total", "by_category", "list", "balance", "trend", "count"
+- "time_range": one of "this_month", "last_month", "this_year", "last_year", "all", or "YYYY" or "YYYY-MM" (infer 本月/这个月, 上月/上个月, 今年, 去年, 全部/所有, or an explicit date)
+- "keyword": a substring to filter by payee/narration (e.g. "吃饭","打车"), or null
+- "account": the most relevant account name from the list if implied, else null
+
+User question: "{text}"
+"""
+        try:
+            return self._generate_json(prompt)
+        except Exception as e:  # noqa: BLE001
+            print(f"NL query intent failed: {e}")
+            return {}
+
     def extract_image_transaction(self, image_bytes: bytes, mime_type: str, default_currency: str, caption: str = "") -> dict:
         """Extract raw factual transaction fields from an image."""
         today = date.today().isoformat()

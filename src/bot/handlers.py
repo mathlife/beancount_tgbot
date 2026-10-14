@@ -10,8 +10,11 @@ from typing import Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from src.core.image_rules import ExtractedImageTransaction, apply_image_rules, meal_payee_for_food
+from src.core.image_rules import ExtractedImageTransaction, apply_image_rules, meal_payee_for_food, load_rules
 from src.core.transaction_log import TransactionLog
+from src.core.query import LedgerQuery, nl_to_intent
+from src.core.intent import IntentRouter
+from src.core.guardrail import Guardrail
 from src.utils.logger import get_bot_logger
 
 logger = get_bot_logger()
@@ -28,6 +31,11 @@ class MessageHandlers:
         self.allowed_user_id = config.allowed_user_id
         self.currency = config.default_currency
         self.aliases = config.aliases
+        # 意图路由 + 护栏（隐私优先，离线可用）
+        self.router = IntentRouter()
+        self.guardrail = Guardrail()
+        # 账户映射规则引擎（可编辑 YAML，可经 /rules 增减）
+        self.rules = load_rules()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /start 命令"""
@@ -36,7 +44,7 @@ class MessageHandlers:
             "格式: 描述 金额 [账户别名]\n"
             "示例: 午饭 32 wx\n"
             "也可以直接上传支付截图自动识别。\n"
-            "命令: /today 查看今日汇总, /recent 查看最近已存交易。"
+            "命令: /today 今日汇总, /recent 最近交易, /query 自然语言查账, /rules 账户映射规则管理。"
         )
 
     async def reload_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -54,7 +62,9 @@ class MessageHandlers:
                 self.aliases = new_config.aliases
                 self.currency = new_config.default_currency
                 self.matcher.local_expenses_map = new_config.aliases
-                await update.message.reply_text("✅ 配置已重新加载。")
+                # 映射规则引擎与配置一并重载
+                self.rules = load_rules()
+                await update.message.reply_text("✅ 配置与映射规则已重新加载。")
 
             if 'config' not in args or 'all' in args:
                 self.matcher.loader.load()
@@ -77,6 +87,146 @@ class MessageHandlers:
                     self.tx_log.update_status(recent[0].tx_id, 'cancelled')
         else:
             await update.message.reply_text("❌ 没有可撤销的交易。")
+
+    async def rules_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理 /rules 命令 - 查看 / 增减账户映射规则（配置入口）"""
+        if update.effective_user.id != self.allowed_user_id:
+            return
+
+        args = context.args if context.args else []
+        if not args or args[0] in ('list', 'ls'):
+            await self._rules_list(update, args[1] if len(args) > 1 else None)
+            return
+
+        sub = args[0]
+        if sub == 'add':
+            await self._rules_add(update, args[1:])
+        elif sub == 'del' or sub == 'rm':
+            await self._rules_del(update, args[1:])
+        else:
+            await update.message.reply_text(self._rules_help())
+
+    def _rules_help(self) -> str:
+        return (
+            "⚙️ 规则管理用法：\n"
+            "/rules 或 /rules list [payment|counterparty|bank|payee] —— 查看规则\n"
+            "/rules add payment <匹配词> <账户> [provider] [regex] —— 付款方式→资金账户\n"
+            "/rules add counterparty <匹配词> <账户> [provider] [regex] —— 对手方→账户\n"
+            "/rules add bank <全称> <简称> —— 银行全称→简称\n"
+            "/rules add payee <匹配词> <重命名> [provider] —— payee 重命名\n"
+            "/rules del <payment|counterparty|bank|payee> <序号> —— 删除规则\n"
+            "说明：账户映射规则保存在 config/rules.yaml（纯文本），可随时手改；改动即时写盘。"
+        )
+
+    async def _rules_list(self, update: Update, kind: Optional[str]):
+        kind_map = {"payment": "payment_method_map", "counterparty": "counterparty_map",
+                    "bank": "bank_short_names", "payee": "payee_rename"}
+        internal = kind_map.get(kind, kind) if kind else None
+        grouped = self.rules.list_rules(internal)
+        lines = ["⚙️ 当前账户映射规则："]
+        label = {"payment_method_map": "付款方式→资金账户", "counterparty_map": "对手方→账户",
+                 "bank_short_names": "银行简称", "payee_rename": "payee 重命名"}
+        for k, items in grouped.items():
+            lines.append(f"\n【{label.get(k, k)}】")
+            if not items:
+                lines.append("  （空）")
+            for disp_id, e in items:
+                if k == "bank_short_names":
+                    lines.append(f"  {disp_id}. {e['match']} → {e.get('short','')}")
+                elif k == "payee_rename":
+                    lines.append(f"  {disp_id}. {e['match']} → {e.get('rename','')}  (provider={e['provider']})")
+                else:
+                    acct = e.get('account') or f"支出:{e.get('account_outflow','')} / 收入:{e.get('account_inflow','')}"
+                    lines.append(f"  {disp_id}. [{e['provider']}] {e['match']} → {acct}  (pri={e['priority']}, regex={e['regex']})")
+        lines.append("\n使用 /rules add / del 进行增减。")
+        await update.message.reply_text("\n".join(lines))
+
+    async def _rules_add(self, update: Update, rest):
+        if len(rest) < 3:
+            await update.message.reply_text(self._rules_help())
+            return
+        kind = rest[0]
+        if kind not in ("payment", "counterparty", "bank", "payee"):
+            await update.message.reply_text(self._rules_help())
+            return
+        try:
+            if kind == "bank":
+                match, short = rest[1], rest[2]
+                new_id = self.rules.add_rule("bank_short_names", match, short)
+            elif kind == "payee":
+                match, rename = rest[1], rest[2]
+                provider = rest[3] if len(rest) > 3 else "any"
+                new_id = self.rules.add_rule("payee_rename", rename, match=match, provider=provider)
+            else:
+                match, account = rest[1], rest[2]
+                provider = rest[3] if len(rest) > 3 else "any"
+                regex = len(rest) > 4 and rest[4].lower() in ("1", "true", "regex")
+                new_id = self.rules.add_rule(
+                    "payment_method_map" if kind == "payment" else "counterparty_map",
+                    match, account, provider=provider, regex=regex,
+                )
+            self.rules.save()
+            await update.message.reply_text(f"✅ 已添加规则 #{new_id} 到 {kind}（已写入 config/rules.yaml）。")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"添加规则失败: {e}")
+            await update.message.reply_text(f"❌ 添加失败: {e}")
+
+    async def _rules_del(self, update: Update, rest):
+        if len(rest) < 2:
+            await update.message.reply_text(self._rules_help())
+            return
+        kind_map = {"payment": "payment_method_map", "counterparty": "counterparty_map",
+                    "bank": "bank_short_names", "payee": "payee_rename"}
+        kind = rest[0]
+        if kind not in kind_map:
+            await update.message.reply_text(self._rules_help())
+            return
+        try:
+            disp_id = int(rest[1])
+        except ValueError:
+            await update.message.reply_text("❌ 序号必须是数字。")
+            return
+        ok = self.rules.del_rule(kind_map[kind], disp_id)
+        if ok:
+            self.rules.save()
+            await update.message.reply_text(f"✅ 已删除 {kind} 第 {disp_id} 条规则（已写盘）。")
+        else:
+            await update.message.reply_text(f"❌ 序号 {disp_id} 不存在于 {kind}。")
+
+    async def query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理 /query 命令 - 自然语言查询账本（纯内存计算，不依赖 bean-query CLI）"""
+        if update.effective_user.id != self.allowed_user_id:
+            return
+
+        q = " ".join(context.args) if context.args else ""
+        if not q:
+            await update.message.reply_text(
+                "🔍 用法: /query 这个月吃饭花了多少\n"
+                "支持：合计 / 分类 / 明细 / 趋势 / 笔数 / 余额\n"
+                "时间：本月 / 上月 / 今年 / 去年 / 全部 / 2026-01"
+            )
+            return
+
+        await self.run_nl_query(q, update, context)
+
+    async def run_nl_query(self, text: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """自然语言查询的统一入口（/query 命令与自由文本查询意图共用）。"""
+        # 护栏：拦截试图外泄账本数据的查询（如「把账本都发给我」）
+        scan = self.guardrail.scan(text)
+        if scan.blocked:
+            await update.message.reply_text(self.guardrail.refusal_message())
+            return
+
+        status = await update.message.reply_text("🔍 查询中...")
+        try:
+            lq = LedgerQuery(loader=self.matcher.loader)
+            intent = nl_to_intent(text, self.matcher.ai_client, self.matcher.loader, self.aliases)
+            result = lq.run_intent(intent, default_currency=self.currency)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"查询失败: {e}")
+            result = f"❌ 查询失败: {e}"
+
+        await status.edit_text(result)
 
     async def today_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /today 命令 - 显示今日交易汇总"""
@@ -170,6 +320,13 @@ class MessageHandlers:
         if not message:
             return
 
+        # 护栏：截图说明（caption）同样可能携带注入，先扫描
+        caption = message.caption or ""
+        scan = self.guardrail.scan(caption)
+        if scan.blocked:
+            await message.reply_text(self.guardrail.refusal_message())
+            return
+
         status_msg = await message.reply_text("🖼️ 正在识别截图...")
 
         try:
@@ -183,11 +340,11 @@ class MessageHandlers:
                 image_bytes=image_bytes,
                 mime_type=mime_type,
                 default_currency=self.currency,
-                caption=message.caption or ""
+                caption=caption
             )
 
             extracted = self._build_extracted_transaction(raw)
-            resolved = apply_image_rules(extracted)
+            resolved = apply_image_rules(extracted, rules=self.rules)
 
             context.user_data['pending_tx'] = {
                 'date': resolved.date,
@@ -548,7 +705,8 @@ class MessageHandlers:
         )
 
     async def text_handler_wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """文本消息包装器"""
+        """文本消息包装器：先护栏、再意图路由。"""
+        # 1) 编辑分类中的输入，跳过路由
         if context.user_data.get('awaiting_expense_edit'):
             new_account = update.message.text.strip()
             context.user_data['pending_tx']['expense'] = new_account
@@ -574,8 +732,29 @@ class MessageHandlers:
                 f"已更新分类: {new_account}\n{discount_str}确认？",
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
-        else:
+            return
+
+        text = update.message.text or ""
+
+        # 2) 护栏：拦截提示注入 / 账本外泄，绝交 AI、绝写账本
+        scan = self.guardrail.scan(text)
+        if scan.blocked:
+            logger.warning(f"护栏拦截 [{scan.category}]: {text[:80]}")
+            await update.message.reply_text(self.guardrail.refusal_message())
+            return
+
+        # 3) 意图路由
+        intent = self.router.classify(text)
+        if intent.intent == "query":
+            await self.run_nl_query(text, update, context)
+        elif intent.intent == "transaction":
             await self.handle_message(update, context)
+        else:
+            await update.message.reply_text(
+                "💡 我是记账机器人，只处理两类事：\n"
+                "• 记账：描述 + 金额，例如「午饭 32 wx」\n"
+                "• 查询：直接问我「这个月吃饭花多少」，或 /query"
+            )
 
     def _apply_food_payee(self, tx_data: dict):
         metadata = tx_data.get('metadata') or {}

@@ -71,8 +71,16 @@ class LedgerAppender:
             asset_account, expense_account, payee,
             discount_tx, converted_amount, converted_currency
         )
-        
-        # 验证条目格式
+
+        # 写前校验：结构化字段 + Beancount 语法
+        struct_err = self.validate_transaction_data({
+            "date": date, "amount": amount, "currency": currency,
+            "asset": asset_account, "expense": expense_account,
+        })
+        if struct_err:
+            logger.error(f"交易字段校验失败: {struct_err}")
+            return False, f"验证失败: {struct_err}"
+
         validation_error = self._validate_entry(entry)
         if validation_error:
             logger.error(f"交易验证失败: {validation_error}")
@@ -120,6 +128,13 @@ class LedgerAppender:
             narration=narration,
             metadata=metadata or {}
         )
+
+        struct_err = self.validate_transaction_data({
+            "date": date, "currency": currency, "postings": postings,
+        })
+        if struct_err:
+            logger.error(f"交易字段校验失败: {struct_err}")
+            return False, f"验证失败: {struct_err}"
 
         validation_error = self._validate_entry(entry)
         if validation_error:
@@ -284,25 +299,39 @@ class LedgerAppender:
     
     def _validate_entry(self, entry: str) -> Optional[str]:
         """
-        验证交易条目格式
+        写前校验：验证交易条目字符串是否可被安全写入。
         
-        Args:
-            entry: 交易条目字符串
+        两层校验：
+        1. 基础结构校验（无需 beancount，永远可用）；
+        2. Beancount 语法级校验（复用 beancount.parser，离线、无 CLI 依赖）。
         
         Returns:
             错误信息或 None（验证通过）
         """
+        # 1. 基础结构校验
+        struct_err = self._validate_structure(entry)
+        if struct_err:
+            return struct_err
+
+        # 2. Beancount 语法级校验（beancount 不可用时安全跳过）
+        syntax_err = self._validate_beancount_syntax(entry)
+        if syntax_err:
+            return syntax_err
+
+        return None
+
+    @staticmethod
+    def _validate_structure(entry: str) -> Optional[str]:
+        """基础结构校验：行数、日期头、至少一条支出/收入与资产账户。"""
         lines = entry.strip().split('\n')
-        
+
         if len(lines) < 3:
             return "交易条目行数不足"
-        
-        # 检查日期行格式
+
         first_line = lines[0].strip()
         if not first_line or first_line[0] not in '0123456789':
             return "交易头部格式错误"
-        
-        # 检查是否包含必要的账户行
+
         has_expense = False
         has_asset = False
         for line in lines[1:]:
@@ -311,12 +340,77 @@ class LedgerAppender:
                 has_expense = True
             if stripped.startswith('Assets:') or stripped.startswith('Liabilities:'):
                 has_asset = True
-        
+
         if not has_expense:
             return "缺少支出/收入账户"
         if not has_asset:
             return "缺少资产账户"
+
+        return None
+
+    @staticmethod
+    def _validate_beancount_syntax(entry: str) -> Optional[str]:
+        """
+        Beancount 语法级校验：仅做解析层面的检查（账户名格式、金额/日期格式、
+        括号平衡等），不运行插件，因此不会因账户未 open 而误报。
         
+        beancount 不可用（理论上 BeanLoader 已要求）时安全返回 None，退回基础校验。
+        """
+        try:
+            from beancount.parser import parser as _parser
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            _, errors, _ = _parser.parse_string(entry)
+        except Exception as e:  # noqa: BLE001
+            return f"Beancount 语法错误: {e}"
+
+        if errors:
+            msgs = "; ".join(getattr(e, "message", str(e)) for e in errors)
+            return f"Beancount 校验未通过: {msgs}"
+
+        return None
+
+    @staticmethod
+    def validate_transaction_data(data: dict) -> Optional[str]:
+        """
+        结构化写前校验：在把 pending_tx 渲染成文本之前，先检查关键字段。
+        返回错误信息或 None（校验通过）。
+        """
+        if not data:
+            return "交易数据为空"
+
+        date = data.get('date')
+        if not hasattr(date, 'isoformat'):
+            return "日期字段无效"
+
+        # 多分录交易：金额与货币由 postings 各自携带，无需顶层字段
+        if data.get('postings'):
+            if not isinstance(data['postings'], list) or len(data['postings']) < 2:
+                return "分录至少需要两条 postings"
+            for p in data['postings']:
+                acc = (p.get('account') or "").strip()
+                if not acc or ':' not in acc:
+                    return f"分录账户格式无效: {acc}"
+            return None
+
+        # 双分录交易：需要顶层金额 / 货币 / 双方账户
+        amount = data.get('amount')
+        if amount in (None, 0, 0.0):
+            return "金额为零或缺失"
+
+        currency = (data.get('currency') or "").strip()
+        if not currency:
+            return "货币缺失"
+
+        asset = (data.get('asset') or "").strip()
+        expense = (data.get('expense') or "").strip()
+        if not asset or ':' not in asset:
+            return f"资金账户格式无效: {asset}"
+        if not expense or ':' not in expense:
+            return f"对手账户格式无效: {expense}"
+
         return None
     
     def _create_backup(self) -> Optional[Path]:

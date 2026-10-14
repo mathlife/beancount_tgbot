@@ -1,0 +1,139 @@
+# ============================================================================
+# 账户映射规则（可自由编辑；也可用 /rules 命令在 Telegram 里增减）
+#
+# 设计约束：单用户、纯文本、无数据库 —— 规则只存在这个 YAML 文件里。
+# 匹配优先级：priority 越大越优先；同优先级时，匹配串越长越优先。
+#
+# 四种规则：
+#   1) payment_method_map : 付款方式文本 -> 资金(资产/负债)账户
+#      match     关键词/正则（在付款方式文本中匹配）
+#      provider  alipay / wechat / any
+#      account   命中账户（未分别指定 outflow/inflow 时共用）
+#   2) counterparty_map  : 对手方/收款方关键词 -> 对手方账户
+#      match     在 payee / narration / category / 备注 中匹配
+#      requires  额外必须包含的字符串（可选）
+#      account(_outflow/_inflow)  命中账户；按收支方向选择（缺省回退 account）
+#   3) bank_short_names  : 银行全称 -> 简称（用于 payee 拼装）
+#   4) payee_rename      : payee 文本重命名（支持 {bank} 模板）
+#
+# 注意：下面大多是原作者的私人账户，初次使用时请按需增删，只保留自己的卡/账户。
+# ============================================================================
+
+# 1) 付款方式 -> 资金账户（资产/负债）
+payment_method_map:
+  # --- 支付宝专属 ---
+  - {match: "余额宝", provider: "alipay", account: "Assets:CN:FinTech:YEB:Huiyou", priority: 10}
+  - {match: "花呗", provider: "alipay", account: "Liabilities:Alipay:HB", priority: 10}
+  - {match: "亲情卡(常桂英", provider: "alipay", account: "Liabilities:Payable:Parents", priority: 10}
+  # --- 微信专属 ---
+  - {match: "零钱通", provider: "wechat", account: "Assets:CN:FinTech:LQT:Mathlife", priority: 10}
+  # --- 银行卡（alipay / wechat 通用）---
+  - {match: "工商银行储蓄卡(3355)", provider: "any", account: "Assets:CN:DebitCard:ICBC:3355"}
+  - {match: "浦发银行储蓄卡(1691)", provider: "any", account: "Assets:CN:DebitCard:SPDB:1691"}
+  - {match: "光大银行储蓄卡(6340)", provider: "any", account: "Assets:CN:DebitCard:CEB:6340"}
+  - {match: "中信银行储蓄卡(1709)", provider: "any", account: "Assets:CN:DebitCard:CITIC:1709"}
+  - {match: "四川天府银行储蓄卡(5866)", provider: "any", account: "Assets:CN:DebitCard:CGNB:5866"}
+  - {match: "华夏银行储蓄卡(2593)", provider: "any", account: "Assets:CN:DebitCard:HXB:2593"}
+  - {match: "浙商银行储蓄卡(0907)", provider: "any", account: "Assets:CN:DebitCard:CZBANK:0907"}
+  - {match: "招商银行储蓄卡(5666)", provider: "any", account: "Assets:CN:DebitCard:CMB:5666"}
+  - {match: "中国银行储蓄卡(2174)", provider: "any", account: "Assets:CN:DebitCard:BOC:2174"}
+  - {match: "平安银行储蓄卡(6197)", provider: "any", account: "Assets:CN:DebitCard:PAB:6197"}
+  - {match: "建设银行储蓄卡(7610)", provider: "any", account: "Assets:CN:DebitCard:CCB:7610"}
+  - {match: "农业银行储蓄卡(8979)", provider: "any", account: "Assets:CN:DebitCard:ABC:8979"}
+  - {match: "网商银行储蓄卡(5518)", provider: "any", account: "Assets:CN:DebitCard:ANTBANK:5518"}
+  - {match: "中信银行信用卡(9369)", provider: "any", account: "Liabilities:CreditCard:UnionPay:CITIC"}
+  - {match: "工商银行信用卡(3965)", provider: "any", account: "Liabilities:CreditCard:UnionPay:ICBC:3965"}
+  - {match: "建设银行信用卡(8686)", provider: "any", account: "Liabilities:CreditCard:UnionPay:CCB"}
+  - {match: "邮储银行信用卡(1824)", provider: "any", account: "Liabilities:CreditCard:AMEX:PSBC:1824"}
+
+# 2) 对手方关键词 -> 对手方账户
+counterparty_map:
+  # --- 支付宝：特定商户 / 场景（高优先级，先匹配）---
+  - {match: "收益发放", provider: "alipay", account: "Income:PassiveIncome:Interest:YEB", priority: 100}
+  - {match: "余利宝", requires: "网商银行", provider: "alipay", account: "Assets:CN:DebitCard:ANTBANK:5518", priority: 100}
+  - {match: "碰一下支付现金奖励", provider: "alipay", account: "Income:CN:RedEnvelope", priority: 100}
+  - {match: "杭州阿里妈妈淘联信息技术有限公司", provider: "alipay", account: "Income:CN:RedEnvelope", priority: 100}
+  - {match: "批量付款", provider: "alipay", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "华夏银行", requires: "提现", provider: "alipay", account: "Assets:CN:DebitCard:HXB:2593", priority: 100}
+  - {match: "深圳市惠得宝科技有限公司", requires: "提款", provider: "alipay", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "蜜蜂提现", provider: "alipay", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "鹏林(高鹏林)", provider: "alipay", account: "Expenses:Unknown", priority: 100}
+  - {match: "seiten(*滨)", provider: "alipay", account: "Expenses:Unknown", priority: 100}
+  - {match: "**君", provider: "alipay", account: "Income:Unknown", priority: 100}
+  - {match: "**伟", provider: "alipay", account: "Income:Unknown", priority: 100}
+  - {match: "*腾", provider: "alipay", account: "Income:Unknown", priority: 100}
+  - {match: "顺丰速运", provider: "alipay", account: "Expenses:Package-Delivery", priority: 100}
+  - {match: "厦门地铁", provider: "alipay", account: "Expenses:Transport", priority: 100}
+  - {match: "支付宝红包", requires: "口令红包", provider: "alipay", account: "Income:CN:RedEnvelope", priority: 100}
+  - {match: "见福便利店", provider: "alipay", account: "Liabilities:Payable:Parents", priority: 100}
+  - {match: "碰一碰收款", provider: "alipay", account: "Liabilities:Payable:Parents", priority: 100}
+  # 长辈/亲情支持（payee 形如「支付宝{银行}立减」）的对手方由代码兜底精确判定，不在此用宽匹配。
+  - {match: "转账红包", provider: "alipay", account_outflow: "Assets:CN:ZeroSum", account_inflow: "Income:CN:RedEnvelope", priority: 100}
+  # --- 支付宝/通用：商户关键词 -> 费用科目 ---
+  - {match: "美团", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "套餐店", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "小吃店", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "炖品", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "不想走", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "肯德基", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "便利店", provider: "any", account: "Expenses:Groceries", priority: 50}
+  - {match: "便民服务", provider: "any", account: "Expenses:Groceries", priority: 50}
+  # --- 支付宝/通用：交易分类 -> 科目 ---
+  - {match: "日用百货", provider: "any", account: "Expenses:Groceries", priority: 0}
+  - {match: "餐饮美食", provider: "any", account: "Expenses:Food", priority: 0}
+  - {match: "交通出行", provider: "any", account: "Expenses:Transport", priority: 0}
+
+  # --- 微信：特定商户 / 场景（高优先级）---
+  - {match: "零钱通收益", provider: "wechat", account: "Income:PassiveIncome:Interest:LQT", priority: 100}
+  - {match: "收益入账", provider: "wechat", account: "Income:PassiveIncome:Interest:LQT", priority: 100}
+  - {match: "提现", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "回款", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "提款", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "零钱充值", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "批量付款", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "经营码交易", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "米夏", requires: "转账", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "卖存款", provider: "wechat", account: "Income:SideProject", priority: 100}
+  - {match: "外卖女王", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "外卖回款", provider: "wechat", account: "Assets:CN:ZeroSum", priority: 100}
+  - {match: "红包", provider: "wechat", account_outflow: "Expenses:Unknown", account_inflow: "Income:CN:RedEnvelope", priority: 90}
+  - {match: "奖励", provider: "wechat", account_outflow: "Expenses:Unknown", account_inflow: "Income:CN:RedEnvelope", priority: 90}
+  - {match: "退款", provider: "wechat", account: "Income:CN:Rebate", priority: 80}
+  - {match: "小村口", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "秋佳", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "卤味", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "快餐", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "佳乐多", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "餐饮", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "美食", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "外卖", provider: "any", account: "Expenses:Food", priority: 50}
+  - {match: "微信转账", provider: "wechat", account_outflow: "Expenses:Unknown", account_inflow: "Income:Unknown", priority: 40}
+  - {match: "转账", provider: "wechat", account_outflow: "Expenses:Unknown", account_inflow: "Income:Unknown", priority: 40}
+  - {match: "扫码支付", provider: "wechat", account_outflow: "Expenses:Unknown", account_inflow: "Income:Unknown", priority: 30}
+  # 微信立减金（仅收入方向计入；支出方向由兜底按方向归类）
+  - {match: "立减金", provider: "wechat", account_inflow: "Income:CN:WXLJJ", priority: 100}
+
+# 3) 银行全称 -> 简称（用于 payee 拼装，例如「支付宝中信立减」）
+bank_short_names:
+  - {match: "工商银行", short: "工行"}
+  - {match: "浦发银行", short: "浦发"}
+  - {match: "光大银行", short: "光大"}
+  - {match: "中信银行", short: "中信"}
+  - {match: "四川天府银行", short: "天府"}
+  - {match: "华夏银行", short: "华夏"}
+  - {match: "浙商银行", short: "浙商"}
+  - {match: "招商银行", short: "招商"}
+  - {match: "中国银行", short: "中行"}
+  - {match: "平安银行", short: "平安"}
+  - {match: "建设银行", short: "建行"}
+  - {match: "农业银行", short: "农行"}
+  - {match: "宁波银行", short: "宁波"}
+  - {match: "盛京银行", short: "盛京"}
+  - {match: "邮储银行", short: "邮储"}
+  - {match: "民生银行", short: "民生"}
+  - {match: "交通银行", short: "交行"}
+  - {match: "花呗", short: "花呗"}
+  - {match: "亲情卡", short: "亲情卡"}
+
+# 4) payee 重命名（可选；rename 中可用 {bank} 占位符，会被银行简称替换）
+payee_rename: []

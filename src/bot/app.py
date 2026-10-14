@@ -82,6 +82,8 @@ def create_application(config: AppConfig):
             BotCommand("recent", "查看最近已存交易"),
             BotCommand("undo", "撤销最后一笔交易"),
             BotCommand("reload", "重新加载配置和账本"),
+            BotCommand("query", "自然语言查询账本"),
+            BotCommand("rules", "查看 / 增减账户映射规则"),
         ])
         await application.bot.send_message(
             chat_id=config.allowed_user_id,
@@ -105,6 +107,8 @@ def create_application(config: AppConfig):
     application.add_handler(CommandHandler('undo', msg_handlers.undo_last))
     application.add_handler(CommandHandler('today', msg_handlers.today_summary))
     application.add_handler(CommandHandler('recent', msg_handlers.recent_transactions))
+    application.add_handler(CommandHandler('query', msg_handlers.query))
+    application.add_handler(CommandHandler('rules', msg_handlers.rules_command))
     application.add_handler(CallbackQueryHandler(cb_handlers.button_handler))
     application.add_handler(MessageHandler(
         filters.PHOTO | filters.Document.IMAGE,

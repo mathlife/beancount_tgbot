@@ -1,8 +1,11 @@
 import math
+import os
 from dataclasses import dataclass
 from datetime import date
 import re
 from typing import List, Optional
+
+from src.core.rules_engine import RulesEngine
 
 
 @dataclass
@@ -51,54 +54,38 @@ class ResolvedImageTransaction:
     needs_review: bool = False
 
 
-BANK_ACCOUNT_MAP = {
-    '工商银行储蓄卡(3355)': 'Assets:CN:DebitCard:ICBC:3355',
-    '浦发银行储蓄卡(1691)': 'Assets:CN:DebitCard:SPDB:1691',
-    '光大银行储蓄卡(6340)': 'Assets:CN:DebitCard:CEB:6340',
-    '中信银行储蓄卡(1709)': 'Assets:CN:DebitCard:CITIC:1709',
-    '四川天府银行储蓄卡(5866)': 'Assets:CN:DebitCard:CGNB:5866',
-    '华夏银行储蓄卡(2593)': 'Assets:CN:DebitCard:HXB:2593',
-    '浙商银行储蓄卡(0907)': 'Assets:CN:DebitCard:CZBANK:0907',
-    '招商银行储蓄卡(5666)': 'Assets:CN:DebitCard:CMB:5666',
-    '中国银行储蓄卡(2174)': 'Assets:CN:DebitCard:BOC:2174',
-    '平安银行储蓄卡(6197)': 'Assets:CN:DebitCard:PAB:6197',
-    '建设银行储蓄卡(7610)': 'Assets:CN:DebitCard:CCB:7610',
-    '农业银行储蓄卡(8979)': 'Assets:CN:DebitCard:ABC:8979',
-    '网商银行储蓄卡(5518)': 'Assets:CN:DebitCard:ANTBANK:5518',
-    '中信银行信用卡(9369)': 'Liabilities:CreditCard:UnionPay:CITIC',
-    '工商银行信用卡(3965)': 'Liabilities:CreditCard:UnionPay:ICBC:3965',
-    '建设银行信用卡(8686)': 'Liabilities:CreditCard:UnionPay:CCB',
-    '邮储银行信用卡(1824)': 'Liabilities:CreditCard:AMEX:PSBC:1824',
-}
-
-BANK_SHORT_NAME_MAP = {
-    '工商银行': '工行',
-    '浦发银行': '浦发',
-    '光大银行': '光大',
-    '中信银行': '中信',
-    '四川天府银行': '天府',
-    '华夏银行': '华夏',
-    '浙商银行': '浙商',
-    '招商银行': '招商',
-    '中国银行': '中行',
-    '平安银行': '平安',
-    '建设银行': '建行',
-    '农业银行': '农行',
-    '宁波银行': '宁波',
-    '盛京银行': '盛京',
-    '邮储银行': '邮储',
-    '民生银行': '民生',
-    '交通银行': '交行',
-}
+# ---------------------------------------------------------------------------
+# 规则引擎加载（默认从 config/rules.yaml 读取可编辑种子；缺失时退化为空引擎）
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_DEFAULT_RULES_PATH = os.path.join(_PROJECT_ROOT, "config", "rules.yaml")
+_rules_cache: Optional[RulesEngine] = None
 
 
-def apply_image_rules(tx: ExtractedImageTransaction) -> ResolvedImageTransaction:
+def load_rules(path: Optional[str] = None) -> RulesEngine:
+    """加载账户映射规则；path 为空时读取默认 config/rules.yaml。"""
+    global _rules_cache
+    target = path or _DEFAULT_RULES_PATH
+    if target == _DEFAULT_RULES_PATH and _rules_cache is not None:
+        return _rules_cache
+    engine = RulesEngine.from_file(target) if os.path.exists(target) else RulesEngine({})
+    if target == _DEFAULT_RULES_PATH:
+        _rules_cache = engine
+    return engine
+
+
+def apply_image_rules(tx: ExtractedImageTransaction, rules: Optional[RulesEngine] = None) -> ResolvedImageTransaction:
+    if rules is None:
+        rules = load_rules()
     if _is_wechat_transaction(tx):
-        return _apply_wechat_rules(tx)
-    return _apply_alipay_rules(tx)
+        return _apply_wechat_rules(tx, rules)
+    return _apply_alipay_rules(tx, rules)
 
 
-def _apply_alipay_rules(tx: ExtractedImageTransaction) -> ResolvedImageTransaction:
+# ---------------------------------------------------------------------------
+# 支付宝
+# ---------------------------------------------------------------------------
+def _apply_alipay_rules(tx: ExtractedImageTransaction, rules: RulesEngine) -> ResolvedImageTransaction:
     payee = tx.payee.strip()
     narration = tx.narration.strip()
     method = tx.payment_method.strip()
@@ -113,15 +100,24 @@ def _apply_alipay_rules(tx: ExtractedImageTransaction) -> ResolvedImageTransacti
         payee = '蜜蜂提现'
         narration = ''
 
+    is_outflow = _is_outflow(tx)
     if _is_parent_support(payee, narration, receiver):
-        bank_short = _resolve_bank_short(method)
+        bank_short = rules.resolve_bank_short(method)
         payee = f'支付宝{bank_short}立减' if bank_short else '支付宝立减'
         narration = ''
 
-    funding_account = _resolve_alipay_asset_account(method)
-    counterparty_account = _resolve_alipay_counterparty_account(payee, narration, category, tx.amount)
+    funding_account = rules.resolve_payment_account(method, provider='alipay', is_outflow=is_outflow) \
+        or 'Assets:CN:Alipay:Huiyou'
+    search_text = ' '.join([payee, narration, category, tx.notes])
+    # 长辈/亲情支持：payee 形如「支付宝{银行}立减」，对手方固定为亲情应付款（优先于分类规则）
+    if payee.startswith('支付宝') and payee.endswith('立减'):
+        counterparty_account = 'Liabilities:Payable:Parents'
+    else:
+        counterparty_account = rules.resolve_counterparty_account(search_text, provider='alipay', is_outflow=is_outflow)
+        if not counterparty_account:
+            counterparty_account = _alipay_counterparty_fallback(payee, is_outflow)
+
     payee = meal_payee_for_food(counterparty_account, tx.transaction_time) or payee
-    is_outflow = _is_outflow(tx)
     base_offset, discount = _resolve_discount_amount(tx.amount, tx.order_amount, tx.discount_amount, method, is_outflow)
 
     postings_with_role = [
@@ -172,91 +168,27 @@ def _is_parent_support(payee: str, narration: str, receiver: str) -> bool:
     )
 
 
-def _resolve_bank_short(method: str) -> str:
-    for full_name, short_name in BANK_SHORT_NAME_MAP.items():
-        if full_name in method:
-            return short_name
-    if '花呗' in method:
-        return '花呗'
-    if '亲情卡' in method:
-        return '亲情卡'
-    return ''
+def _alipay_counterparty_fallback(payee: str, is_outflow: bool) -> str:
+    """引擎未命中时的兜底：按收支方向归类到 Unknown。"""
+    return 'Expenses:Unknown' if is_outflow else 'Income:Unknown'
 
 
-def _resolve_alipay_asset_account(method: str) -> str:
-    if '余额宝' in method:
-        return 'Assets:CN:FinTech:YEB:Huiyou'
-    if '花呗' in method:
-        return 'Liabilities:Alipay:HB'
-    if '亲情卡(常桂英' in method:
-        return 'Liabilities:Payable:Parents'
-
-    for key, account in BANK_ACCOUNT_MAP.items():
-        if key in method:
-            return account
-
-    return 'Assets:CN:Alipay:Huiyou'
-
-
-def _resolve_alipay_counterparty_account(payee: str, narration: str, category: str, amount: float) -> str:
-    if '收益发放' in narration:
-        return 'Income:PassiveIncome:Interest:YEB'
-    if payee == '网商银行' and '余利宝' in narration:
-        return 'Assets:CN:DebitCard:ANTBANK:5518'
-    if payee == '杭州阿里妈妈淘联信息技术有限公司' or '碰一下支付现金奖励' in narration:
-        return 'Income:CN:RedEnvelope'
-    if '批量付款' in narration or '批量付款' in payee:
-        return 'Assets:CN:ZeroSum'
-    if payee == '华夏银行' and '提现' in narration:
-        return 'Assets:CN:DebitCard:HXB:2593'
-    if payee == '深圳市惠得宝科技有限公司' and '提款' in narration:
-        return 'Assets:CN:ZeroSum'
-    if payee == '蜜蜂提现':
-        return 'Assets:CN:ZeroSum'
-    if payee in ['鹏林(高鹏林)', 'seiten(*滨)']:
-        return 'Expenses:Unknown'
-    if payee in ['**君', '**伟', '*腾']:
-        return 'Income:Unknown'
-    if payee == '顺丰速运':
-        return 'Expenses:Package-Delivery'
-    if payee == '厦门地铁':
-        return 'Expenses:Transport'
-    if payee == '支付宝红包' and '口令红包' in narration:
-        return 'Income:CN:RedEnvelope'
-    if payee == '见福便利店' or payee == '碰一碰收款' or (payee.startswith('支付宝') and payee.endswith('立减')):
-        return 'Liabilities:Payable:Parents'
-    if any(text in payee for text in ['美团', '套餐店', '小吃店', '炖品', '不想走']) or '肯德基' in narration:
-        return 'Expenses:Food'
-    if '便利店' in payee or '便民服务' in payee:
-        return 'Expenses:Groceries'
-    if category == '日用百货':
-        return 'Expenses:Groceries'
-    if category == '餐饮美食':
-        return 'Expenses:Food'
-    if category == '交通出行':
-        return 'Expenses:Transport'
-    if category == '转账红包':
-        return 'Income:CN:RedEnvelope' if amount > 0 else 'Assets:CN:ZeroSum'
-    return 'Expenses:Unknown'
-
-
-def _apply_wechat_rules(tx: ExtractedImageTransaction) -> ResolvedImageTransaction:
+# ---------------------------------------------------------------------------
+# 微信
+# ---------------------------------------------------------------------------
+def _apply_wechat_rules(tx: ExtractedImageTransaction, rules: RulesEngine) -> ResolvedImageTransaction:
     payee = _normalize_wechat_payee(tx.payee.strip(), tx.receiver_name.strip(), tx.narration.strip())
     narration = _normalize_wechat_narration(tx.narration.strip(), tx.category.strip())
     method = tx.payment_method.strip()
     category = tx.category.strip()
     is_outflow = _is_outflow(tx)
 
-    funding_account = _resolve_wechat_asset_account(method, category, narration, tx.notes, is_outflow)
-    counterparty_account = _resolve_wechat_counterparty_account(
-        payee=payee,
-        narration=narration,
-        category=category,
-        method=method,
-        notes=tx.notes,
-        amount=tx.amount,
-        is_outflow=is_outflow,
-    )
+    funding_account = _resolve_wechat_asset_account(method, category, narration, tx.notes, is_outflow, rules)
+    search_text = ' '.join([payee, narration, category, method, tx.notes])
+    counterparty_account = rules.resolve_counterparty_account(search_text, provider='wechat', is_outflow=is_outflow)
+    if not counterparty_account:
+        counterparty_account = _wechat_counterparty_fallback(is_outflow)
+
     payee = meal_payee_for_food(counterparty_account, tx.transaction_time) or payee
     base_offset, discount = _resolve_discount_amount(tx.amount, tx.order_amount, tx.discount_amount, method, is_outflow)
 
@@ -297,6 +229,10 @@ def _apply_wechat_rules(tx: ExtractedImageTransaction) -> ResolvedImageTransacti
         confidence=tx.confidence,
         needs_review=tx.needs_review,
     )
+
+
+def _wechat_counterparty_fallback(is_outflow: bool) -> str:
+    return 'Expenses:Unknown' if is_outflow else 'Income:Unknown'
 
 
 def _resolve_discount_amount(
@@ -449,48 +385,11 @@ def _resolve_wechat_asset_account(
     narration: str,
     notes: str,
     is_outflow: bool,
+    rules: RulesEngine,
 ) -> str:
     text = ' '.join([method, category, narration, notes])
-    if '零钱通' in text:
-        return 'Assets:CN:FinTech:LQT:Mathlife'
+    # 微信立减金（收到）单独计入资产
     if '立减金' in text and not is_outflow and any(keyword in text for keyword in ['获得', '入账', '奖励', '到账']):
         return 'Assets:CN:WXLJJ'
-    return 'Assets:CN:Wechat:Mathlife'
-
-
-def _resolve_wechat_counterparty_account(
-    payee: str,
-    narration: str,
-    category: str,
-    method: str,
-    notes: str,
-    amount: float,
-    is_outflow: bool,
-) -> str:
-    text = ' '.join([payee, narration, category, method, notes])
-
-    if '零钱通收益' in text or '收益入账' in text:
-        return 'Income:PassiveIncome:Interest:LQT'
-    if any(keyword in text for keyword in ['提现', '回款', '提款', '零钱充值']):
-        return 'Assets:CN:ZeroSum'
-    if '批量付款' in text or '经营码交易' in text:
-        return 'Assets:CN:ZeroSum'
-    if payee == '米夏' and '转账' in narration:
-        return 'Assets:CN:ZeroSum'
-    if payee == '卖存款':
-        return 'Income:SideProject'
-    if '外卖女王🌹🌹🌹🌹🌹🌹' in payee or '外卖回款' in narration:
-        return 'Assets:CN:ZeroSum'
-    if '红包' in text or '奖励' in text:
-        return 'Income:CN:RedEnvelope' if not is_outflow else 'Expenses:Unknown'
-    if '退款' in text:
-        return 'Income:CN:Rebate'
-    if any(keyword in text for keyword in ['小村口', '秋佳', '卤味', '快餐', '佳乐多', '餐饮', '美食', '外卖']):
-        return 'Expenses:Food'
-    if any(keyword in narration for keyword in ['微信转账', '转账']):
-        return 'Expenses:Unknown' if is_outflow else 'Income:Unknown'
-    if '扫码支付' in narration or '扫码支付' in category:
-        return 'Expenses:Unknown' if is_outflow else 'Income:Unknown'
-    if '立减金' in text and not is_outflow:
-        return 'Income:CN:WXLJJ'
-    return 'Expenses:Unknown' if is_outflow else 'Income:Unknown'
+    return rules.resolve_payment_account(method, provider='wechat', is_outflow=is_outflow) \
+        or 'Assets:CN:Wechat:Mathlife'
