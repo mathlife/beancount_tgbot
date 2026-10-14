@@ -24,7 +24,6 @@ TG_bot/
 │   ├── logs/               # 交易日志
 │   └── backups/            # 自动备份
 ├── tools/
-│   └── ip-geo-outbound-rename.js  # Sub-Store 节点命名脚本
 └── src/
     ├── bot/                # Telegram Bot 模块
     ├── core/               # 核心逻辑模块
@@ -78,7 +77,6 @@ python main.py
 
 - [项目上下文](contexts/context.md) - 完整项目说明
 - [解析规范](specs/parsing-spec.md) - 技术规范
-- [脚本说明](docs/ip-geo-outbound-rename.md) - Sub-Store 节点命名脚本说明
 
 ## 🛠️ 技术栈
 
