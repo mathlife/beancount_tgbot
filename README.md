@@ -11,26 +11,19 @@
 - ⚡ **Alias System**: YAML + Beancount metadata dual-source aliases
 - 🛡️ **Reliable & Stable**: Auto backup, error recovery, transaction logging
 
-## 📁 Project Structure
+## 🔒 Privacy
 
-```
-beancount_tgbot/
-├── main.py                 # Entry point
-├── config/
-│   ├── .env                # Environment variables
-│   └── settings.yaml       # Configuration
-├── data/
-│   ├── main.bean           # Beancount ledger file
-│   ├── logs/               # Transaction log
-│   └── backups/            # Auto backups
-├── src/
-│   ├── bot/                # Telegram Bot module
-│   ├── core/               # Core logic
-│   ├── utils/              # Utility modules
-│   └── models/             # Data models
-```
+- Messages you send to the bot go through Telegram's Bot API (as with any Telegram bot).
+- Transaction text is sent to the Google Gemini API for AI-powered categorization.
+- Your ledger files stay on the machine where you run the bot.
 
 ## 🚀 Quick Start
+
+### Prerequisites
+
+- **Telegram Bot Token**: Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+- **Gemini API Key**: Get one from [Google AI Studio](https://aistudio.google.com/apikey).
+- **Python 3.10+** installed on the machine running the bot.
 
 ### 1. Install Dependencies
 
@@ -83,6 +76,25 @@ python main.py
 - python-telegram-bot
 - Beancount
 - Google Gemini API
+
+## 📁 Project Structure
+
+```
+beancount_tgbot/
+├── main.py                 # Entry point
+├── config/
+│   ├── .env                # Environment variables
+│   └── settings.yaml       # Configuration
+├── data/
+│   ├── main.bean           # Beancount ledger file
+│   ├── logs/               # Transaction log
+│   └── backups/            # Auto backups
+├── src/
+│   ├── bot/                # Telegram Bot module
+│   ├── core/               # Core logic
+│   ├── utils/              # Utility modules
+│   └── models/             # Data models
+```
 
 ## 🧪 Testing
 
